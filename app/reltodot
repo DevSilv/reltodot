@@ -1,0 +1,196 @@
+#!/bin/bash
+
+set -o nounset
+set -o errexit
+set -o pipefail
+
+err() {
+    echo "Error: $1" 1>&2
+    exit 1
+}
+
+get_nodes() {
+    sed \
+        -e 's/^\(.*\)\t\(.*\)$/\1 [label="\2"]/' \
+        -e 's/^/    /' \
+        -e 's#/#/\\n#g'
+}
+
+get_edges() {
+    local strs="$1"
+
+    local raw_edges=()
+
+    while read str1
+    do
+        while read str2
+        do
+            if [[ "$str1" != "$str2" ]]
+            then
+                local id1 id2 s1 s2 rest
+                IFS=$'\t' read id1 s1 rest <<< "$str1"
+                IFS=$'\t' read id2 s2 rest <<< "$str2"
+
+                if [[ "$s1" == "$s2" ]]
+                then
+                    local exists="false"
+
+                    for idx in "${!raw_edges[@]}"
+                    do
+                        local e_id1 e_id2 e_label
+                        IFS=$'\t' read -r \
+                            e_id1 e_id2 e_label \
+                                <<< "${raw_edges[$idx]}"
+
+                        if [[ ( "$e_id1" == "$id1" \
+                                && "$e_id2" == "$id2" \
+                                && "$e_label" == "$s1" ) \
+                            || ( "$e_id1" == "$id2" \
+                                && "$e_id2" == "$id1" \
+                                && "$e_label" \
+                                    == "$s1" ) ]]
+                        then
+                            exists="true"
+                            break
+                        fi
+                    done
+
+                    if [[ "$exists" == "false" ]]
+                    then raw_edges+=("$id1"$'\t'"$id2"$'\t'"$s1")
+                    fi
+                fi
+            fi
+        done <<< "$strs"
+    done <<< "$strs"
+
+    local raw_edges_sqeezed=()
+
+    for idx in "${!raw_edges[@]}"
+    do        
+        local id1 id2 label
+        IFS=$'\t' read -r id1 id2 label \
+            <<< "${raw_edges[$idx]}"
+
+        local exists="false"
+
+        for s_idx in "${!raw_edges_squeezed[@]}"
+        do
+            local s_id1 s_id2 s_label
+            IFS=$'\t' read -r s_id1 s_id2 s_label \
+                <<< "${raw_edges_squeezed[$s_idx]}"
+
+            if [[ ( "$s_id1" == "$id1" \
+                    && "$s_id2" == "$id2" ) \
+                || ( "$s_id1" == "$id2" \
+                    && "$s_id2" == "$id1" ) ]]
+            then
+                exists="true"
+                raw_edges_squeezed[$s_idx]="$id1"$'\t'"$id2"$'\t'"${s_label},\\n${label}"
+                break
+            fi
+        done
+
+        if [[ "$exists" == "false" ]]
+        then raw_edges_squeezed+=("$id1"$'\t'"$id2"$'\t'"$label")
+        fi
+    done
+
+    printf '%s\n' "${raw_edges_squeezed[@]}" \
+        | sed \
+            -e 's/^\(.*\)\t\(.*\)\t\(.*\)$/\1 -- \2 [label="\3"]/' \
+            -e 's/^/    /'
+}
+
+#get_max_degree_node_id() {
+#    local ids="$( \
+#        sed 's/^    \([^ ]\+\) -- \([^ ]\+\) .*/\1\t\2/' \
+#    )"
+#    local ids_before_summing="$( \
+#       join -j2 -a1 -a2 -o auto -e 0 \
+#           <(echo "$ids" | cut -f1 | sort | uniq -c) \
+#           <(echo "$ids" | cut -f2 | sort | uniq -c) \
+#    )"
+#    local sums="$( \
+#        echo "$ids_before_summing" \
+#            | sed 's/^\([^ ]\+\) \([^ ]\+\) \([^ ]\+\)$/\2+\3/' \
+#            | bc \
+#    )"
+#    paste \
+#            <(echo "$ids_before_summing" \
+#                | cut -f1 -d' ') \
+#            <(echo "$sums") \
+#        | sort -k2 -r \
+#        | head -n1 \
+#        | cut -f1
+#}
+
+#emphasize_max_degree_node() {
+#    local id="$1"
+#    [[ -z "$id" ]] && err "Invalid node ID: $id"
+#
+#    sed "s/^    ${id} \[\\(.*\\)\]$/    ${id} [\\1,style=filled,fillcolor=cyan]/"
+#}
+
+run() {
+    local regex="$1"
+    [[ -z "$regex" ]] && err "Invalid regex"
+
+    local strs=""
+    local paths=""
+    local count=0
+
+    while read path
+    do
+        if [[ "$path" =~ $'\n' \
+            || "$path" =~ $'\t' \
+            || "$path" =~ '\' \
+            || "$path" =~ '"' \
+            || ! -f "$path" ]]
+        then err "Invalid path"
+        fi
+
+        local new_strs="$( \
+            grep -oP "$regex" "$path" || [[ "$?" == 1 ]] \
+        )"
+
+        # NOTE In "sort -u", sorting itself is unnecessary
+        if [[ ! -z "$new_strs" ]]
+        then
+            (( ++count ))
+            new_strs="$( \
+                echo "$new_strs" \
+                    | sort -u \
+                    | sed "s#.*#${count}\\t&\\t${path}#" \
+            )"
+            paths="$count"$'\t'"$path"$'\n'"$paths"
+            strs="$new_strs"$'\n'"$strs"
+        fi
+    done
+
+    local nodes="$( \
+        [[ ! -z "$paths" ]] \
+            && echo "$paths" | head -n -1 | get_nodes \
+    )"
+    local edges="$( \
+        [[ ! -z "$strs" ]] \
+            && get_edges "$(echo "$strs" | head -n -1)" \
+    )"
+    #local max_degree_node_id="$( \
+    #   echo "$edges" | get_max_degree_node_id \
+    #)"
+    #nodes="$( \
+    #    echo "$nodes" \
+    #        | emphasize_max_degree_node \
+    #            "$max_degree_node_id" \
+    #)"
+
+    printf \
+        '%s\n%s\n\n%s\n\n%s\n%s\n' \
+        "graph {" \
+        '    rankdir="LR";' \
+        "$nodes" \
+        "$edges" \
+        "}"
+}
+
+run "$@"
